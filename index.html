@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signly · Registro de contas</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Inter", system-ui, sans-serif;
+    background: #EDEBE4;
+    color: #24303D;
+    margin: 0;
+    padding: 2.5rem 1.25rem;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid #D6D3C8;
+    font-size: 13px;
+    background: #FFFFFF;
+    outline: none;
+    font-family: inherit;
+  }
+  input.mono { font-family: 'IBM Plex Mono', monospace; }
+  button { cursor: pointer; font-family: inherit; }
+  .btn-primary {
+    background: #24303D; color: #F2F0EA; border: none;
+    border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 500;
+  }
+  .btn-secondary {
+    background: transparent; border: 1px solid #D6D3C8; border-radius: 8px;
+    padding: 10px 16px; font-size: 14px; color: #24303D;
+  }
+  .card {
+    background: #F8F7F3; border: 1px solid #D6D3C8; border-radius: 12px;
+    padding: 1.25rem; margin-bottom: 1.5rem;
+  }
+  label span { font-size: 12px; color: #5B6774; display: block; margin-bottom: 4px; }
+  .error { background: #FAECE7; color: #712B13; font-size: 13px; padding: 8px 12px; border-radius: 8px; margin-bottom: 1rem; }
+  .notice { background: #E6F1FB; color: #0C447C; font-size: 12px; padding: 8px 12px; border-radius: 8px; margin-bottom: 1.5rem; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+
+<script>
+let state = {
+  accounts: JSON.parse(localStorage.getItem('accounts') || '[]'),
+  apiKey: localStorage.getItem('dub_api_key') || '',
+  domain: localStorage.getItem('dub_domain') || 'go.signly.site',
+  showForm: false, showSettings: false, editingId: null,
+  form: emptyForm(), error: '', creating: false, createError: ''
+};
+
+function emptyForm() {
+  return { id: null, name: '', affiliateUrl: '', instagram: '', facebook: '', note: '' };
+}
+
+function persistAccounts() { localStorage.setItem('accounts', JSON.stringify(state.accounts)); }
+function persistSettings() {
+  localStorage.setItem('dub_api_key', state.apiKey);
+  localStorage.setItem('dub_domain', state.domain);
+}
+
+function slugify(text) {
+  return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+async function createDubLink(destinationUrl, slug) {
+  const res = await fetch('https://api.dub.co/links', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + state.apiKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: destinationUrl, domain: state.domain, key: slug })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error?.message || 'Erro ao criar link');
+  return state.domain + '/' + data.key;
+}
+
+function openNewForm() { state.form = emptyForm(); state.editingId = null; state.showForm = true; state.createError = ''; render(); }
+function openEditForm(acc) { state.form = { ...acc }; state.editingId = acc.id; state.showForm = true; state.createError = ''; render(); }
+function closeForm() { state.showForm = false; state.form = emptyForm(); state.editingId = null; render(); }
+
+function saveSettingsFromForm() {
+  state.apiKey = document.getElementById('s-key').value.trim();
+  state.domain = document.getElementById('s-domain').value.trim();
+  persistSettings();
+  state.showSettings = false;
+  render();
+}
+
+async function handleAutoGenerate() {
+  const name = document.getElementById('f-name').value.trim();
+  const affiliateUrl = document.getElementById('f-affiliate').value.trim();
+  if (!state.apiKey) { state.createError = 'Cola sua API key do Dub em Configurações primeiro.'; render(); return; }
+  if (!name) { state.createError = 'Dá um nome pra conta antes de gerar.'; render(); return; }
+  if (!affiliateUrl) { state.createError = 'Cola o link de afiliado antes de gerar.'; render(); return; }
+  state.creating = true; state.createError = ''; render();
+  try {
+    const base = slugify(name);
+    const ig = await createDubLink(affiliateUrl, base + '-ig');
+    const fb = await createDubLink(affiliateUrl, base + '-fb');
+    state.form.name = name;
+    state.form.affiliateUrl = affiliateUrl;
+    state.form.instagram = ig;
+    state.form.facebook = fb;
+  } catch (err) {
+    state.createError = 'Não consegui gerar automaticamente (' + err.message + '). Pode colar manualmente abaixo.';
+  }
+  state.creating = false;
+  render();
+}
+
+function handleSave() {
+  const form = {
+    id: state.editingId || Date.now().toString(),
+    name: document.getElementById('f-name').value.trim(),
+    affiliateUrl: document.getElementById('f-affiliate').value.trim(),
+    instagram: document.getElementById('f-instagram').value.trim(),
+    facebook: document.getElementById('f-facebook').value.trim(),
+    note: document.getElementById('f-note').value.trim()
+  };
+  if (!form.name) { state.error = 'Dá um nome pra essa conta antes de salvar.'; render(); return; }
+  const idx = state.accounts.findIndex(a => a.id === state.editingId);
+  if (idx >= 0) state.accounts[idx] = form; else state.accounts.push(form);
+  persistAccounts();
+  state.error = '';
+  closeForm();
+}
+
+function handleDelete(id) {
+  state.accounts = state.accounts.filter(a => a.id !== id);
+  persistAccounts();
+  render();
+}
+
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text);
+  const original = btn.textContent;
+  btn.textContent = 'copiado';
+  setTimeout(() => btn.textContent = original, 1200);
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function linkRow(label, color, value) {
+  return `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+      <span style="font-size:11px; font-weight:500; color:${color}; min-width:62px;">${label}</span>
+      <span style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:${value ? '#24303D' : '#A6A297'}; flex:1;">${value ? escapeHtml(value) : 'sem link ainda'}</span>
+      ${value ? `<button data-copy="${escapeHtml(value)}" style="background:none;border:none;font-size:12px;color:#5B6774;">copiar</button>` : ''}
+    </div>`;
+}
+
+function render() {
+  const app = document.getElementById('app');
+
+  const rows = state.accounts.map(acc => `
+    <div style="padding:1rem 1.25rem; border-top:1px solid #E2E0D6;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <p style="font-size:15px; font-weight:500; margin:0;">${escapeHtml(acc.name)}</p>
+        <div style="display:flex; gap:6px;">
+          <button data-edit="${acc.id}" style="background:none;border:none;font-size:12px;color:#5B6774;text-decoration:underline;">editar</button>
+          <button data-del="${acc.id}" style="background:none;border:none;font-size:12px;color:#993C1D;text-decoration:underline;">remover</button>
+        </div>
+      </div>
+      ${acc.note ? `<p style="font-size:13px;color:#5B6774;margin:0 0 10px;">${escapeHtml(acc.note)}</p>` : ''}
+      ${linkRow('Instagram', '#8C4A6B', acc.instagram)}
+      ${linkRow('Facebook', '#35507A', acc.facebook)}
+    </div>`).join('');
+
+  app.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom:1.25rem; flex-wrap:wrap; gap:1rem;">
+      <div>
+        <p style="font-family: Georgia, serif; font-size:28px; font-weight:600; margin:0;">Registro de contas</p>
+        <p style="font-size:14px; color:#5B6774; margin:4px 0 0;">${escapeHtml(state.domain)} &middot; links por conta, separados por rede</p>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn-secondary" id="btn-settings">Configurações</button>
+        <button class="btn-primary" id="btn-new">+ Nova conta</button>
+      </div>
+    </div>
+
+    <div class="notice">Os dados ficam salvos só neste navegador/dispositivo, não sincronizam com outros aparelhos.</div>
+
+    ${state.error ? `<div class="error">${state.error}</div>` : ''}
+
+    ${state.showSettings ? `
+    <div class="card">
+      <p style="font-size:15px; font-weight:500; margin:0 0 12px;">Conectar com o Dub</p>
+      <div style="display:grid; gap:10px;">
+        <label><span>API key do Dub</span><input id="s-key" class="mono" value="${escapeHtml(state.apiKey)}" placeholder="dub_..." /></label>
+        <label><span>Domínio</span><input id="s-domain" class="mono" value="${escapeHtml(state.domain)}" placeholder="go.signly.site" /></label>
+      </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+        <button class="btn-primary" id="btn-save-settings">Salvar configurações</button>
+      </div>
+    </div>` : ''}
+
+    ${state.showForm ? `
+    <div class="card">
+      <p style="font-size:15px; font-weight:500; margin:0 0 12px;">${state.editingId ? 'Editar conta' : 'Nova conta'}</p>
+      <div style="display:grid; gap:10px;">
+        <label><span>Nome da conta</span><input id="f-name" value="${escapeHtml(state.form.name || '')}" placeholder="ex: Ivy" /></label>
+        <label><span>Link de afiliado (o grande)</span><input id="f-affiliate" class="mono" value="${escapeHtml(state.form.affiliateUrl || '')}" placeholder="https://..." /></label>
+        <button id="btn-generate" class="btn-secondary" style="justify-self:start;" ${state.creating ? 'disabled' : ''}>${state.creating ? 'Gerando...' : 'Gerar links no Dub automaticamente'}</button>
+        ${state.createError ? `<p style="font-size:12px;color:#993C1D;margin:0;">${state.createError}</p>` : ''}
+        <label><span>Link Instagram</span><input id="f-instagram" class="mono" value="${escapeHtml(state.form.instagram || '')}" placeholder="go.signly.site/ivy-ig" /></label>
+        <label><span>Link Facebook</span><input id="f-facebook" class="mono" value="${escapeHtml(state.form.facebook || '')}" placeholder="go.signly.site/ivy-fb" /></label>
+        <label><span>Nota (opcional)</span><input id="f-note" value="${escapeHtml(state.form.note || '')}" /></label>
+      </div>
+      <div style="display:flex; gap:8px; margin-top:14px; justify-content:flex-end;">
+        <button class="btn-secondary" id="btn-cancel">Cancelar</button>
+        <button class="btn-primary" id="btn-save">Salvar</button>
+      </div>
+    </div>` : ''}
+
+    ${state.accounts.length === 0 ? `
+      <div style="text-align:center; padding:3rem 1rem; color:#5B6774; font-size:14px;">Nenhuma conta cadastrada ainda. Clica em + Nova conta pra começar.</div>
+    ` : `<div class="card" style="padding:0; overflow:hidden;">${rows}</div>`}
+  `;
+
+  document.getElementById('btn-settings').addEventListener('click', () => { state.showSettings = !state.showSettings; render(); });
+  document.getElementById('btn-new').addEventListener('click', openNewForm);
+  if (state.showSettings) document.getElementById('btn-save-settings').addEventListener('click', saveSettingsFromForm);
+  if (state.showForm) {
+    document.getElementById('btn-cancel').addEventListener('click', closeForm);
+    document.getElementById('btn-save').addEventListener('click', handleSave);
+    document.getElementById('btn-generate').addEventListener('click', handleAutoGenerate);
+  }
+  app.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => openEditForm(state.accounts.find(a => a.id === b.dataset.edit))));
+  app.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => handleDelete(b.dataset.del)));
+  app.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => copyText(b.dataset.copy, b)));
+}
+
+render();
+</script>
+</body>
+</html>
