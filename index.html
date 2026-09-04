@@ -49,21 +49,68 @@
 
 <script>
 let state = {
-  accounts: JSON.parse(localStorage.getItem('accounts') || '[]'),
+  accounts: [],
   apiKey: localStorage.getItem('dub_api_key') || '',
   domain: localStorage.getItem('dub_domain') || 'go.signly.site',
+  supabaseUrl: localStorage.getItem('supabase_url') || '',
+  supabaseKey: localStorage.getItem('supabase_key') || '',
   showForm: false, showSettings: false, editingId: null,
-  form: emptyForm(), error: '', creating: false, createError: ''
+  form: emptyForm(), error: '', creating: false, createError: '', loading: true
 };
 
 function emptyForm() {
   return { id: null, name: '', affiliateUrl: '', instagram: '', facebook: '', note: '' };
 }
 
-function persistAccounts() { localStorage.setItem('accounts', JSON.stringify(state.accounts)); }
+function supaHeaders(extra) {
+  return {
+    apikey: state.supabaseKey,
+    Authorization: 'Bearer ' + state.supabaseKey,
+    'Content-Type': 'application/json',
+    ...(extra || {})
+  };
+}
+
+async function fetchAccounts() {
+  if (!state.supabaseUrl || !state.supabaseKey) { state.loading = false; return; }
+  try {
+    const res = await fetch(state.supabaseUrl + '/rest/v1/accounts?select=*&order=id.asc', {
+      headers: supaHeaders()
+    });
+    const data = await res.json();
+    state.accounts = (Array.isArray(data) ? data : []).map(rowToAccount);
+  } catch (e) {
+    state.error = 'Não consegui carregar as contas da nuvem.';
+  }
+  state.loading = false;
+}
+
+function rowToAccount(row) {
+  return {
+    id: row.id,
+    name: row.name || '',
+    affiliateUrl: row.affiliateurl || '',
+    instagram: row.instagram || '',
+    facebook: row.facebook || '',
+    note: row.note || ''
+  };
+}
+
+function accountToRow(acc) {
+  return {
+    name: acc.name,
+    affiliateurl: acc.affiliateUrl,
+    instagram: acc.instagram,
+    facebook: acc.facebook,
+    note: acc.note
+  };
+}
+
 function persistSettings() {
   localStorage.setItem('dub_api_key', state.apiKey);
   localStorage.setItem('dub_domain', state.domain);
+  localStorage.setItem('supabase_url', state.supabaseUrl);
+  localStorage.setItem('supabase_key', state.supabaseKey);
 }
 
 function slugify(text) {
@@ -89,9 +136,13 @@ function closeForm() { state.showForm = false; state.form = emptyForm(); state.e
 function saveSettingsFromForm() {
   state.apiKey = document.getElementById('s-key').value.trim();
   state.domain = document.getElementById('s-domain').value.trim();
+  state.supabaseUrl = document.getElementById('s-supa-url').value.trim().replace(/\/$/, '');
+  state.supabaseKey = document.getElementById('s-supa-key').value.trim();
   persistSettings();
   state.showSettings = false;
+  state.loading = true;
   render();
+  fetchAccounts().then(render);
 }
 
 async function handleAutoGenerate() {
@@ -116,9 +167,9 @@ async function handleAutoGenerate() {
   render();
 }
 
-function handleSave() {
+async function handleSave() {
   const form = {
-    id: state.editingId || Date.now().toString(),
+    id: state.editingId,
     name: document.getElementById('f-name').value.trim(),
     affiliateUrl: document.getElementById('f-affiliate').value.trim(),
     instagram: document.getElementById('f-instagram').value.trim(),
@@ -126,16 +177,35 @@ function handleSave() {
     note: document.getElementById('f-note').value.trim()
   };
   if (!form.name) { state.error = 'Dá um nome pra essa conta antes de salvar.'; render(); return; }
-  const idx = state.accounts.findIndex(a => a.id === state.editingId);
-  if (idx >= 0) state.accounts[idx] = form; else state.accounts.push(form);
-  persistAccounts();
-  state.error = '';
-  closeForm();
+  if (!state.supabaseUrl || !state.supabaseKey) { state.error = 'Configura a conexão com a nuvem em Configurações primeiro.'; render(); return; }
+  try {
+    if (state.editingId) {
+      await fetch(state.supabaseUrl + '/rest/v1/accounts?id=eq.' + state.editingId, {
+        method: 'PATCH', headers: supaHeaders(), body: JSON.stringify(accountToRow(form))
+      });
+    } else {
+      await fetch(state.supabaseUrl + '/rest/v1/accounts', {
+        method: 'POST', headers: supaHeaders(), body: JSON.stringify(accountToRow(form))
+      });
+    }
+    await fetchAccounts();
+    state.error = '';
+    closeForm();
+  } catch (e) {
+    state.error = 'Não consegui salvar na nuvem. Tenta de novo.';
+    render();
+  }
 }
 
-function handleDelete(id) {
-  state.accounts = state.accounts.filter(a => a.id !== id);
-  persistAccounts();
+async function handleDelete(id) {
+  try {
+    await fetch(state.supabaseUrl + '/rest/v1/accounts?id=eq.' + id, {
+      method: 'DELETE', headers: supaHeaders()
+    });
+    await fetchAccounts();
+  } catch (e) {
+    state.error = 'Não consegui remover. Tenta de novo.';
+  }
   render();
 }
 
@@ -188,17 +258,23 @@ function render() {
       </div>
     </div>
 
-    <div class="notice">Os dados ficam salvos só neste navegador/dispositivo, não sincronizam com outros aparelhos.</div>
+    <div class="notice">${state.supabaseUrl ? 'Conectado à nuvem — suas contas sincronizam entre dispositivos.' : 'Configure a conexão com a nuvem (Supabase) em Configurações pra sincronizar entre dispositivos.'}</div>
 
     ${state.error ? `<div class="error">${state.error}</div>` : ''}
 
     ${state.showSettings ? `
     <div class="card">
+      <p style="font-size:15px; font-weight:500; margin:0 0 12px;">Conectar com a nuvem (Supabase)</p>
+      <div style="display:grid; gap:10px; margin-bottom:16px;">
+        <label><span>Project URL</span><input id="s-supa-url" class="mono" value="${escapeHtml(state.supabaseUrl)}" placeholder="https://xxxxx.supabase.co" /></label>
+        <label><span>Anon public key</span><input id="s-supa-key" class="mono" value="${escapeHtml(state.supabaseKey)}" placeholder="eyJ..." /></label>
+      </div>
       <p style="font-size:15px; font-weight:500; margin:0 0 12px;">Conectar com o Dub</p>
       <div style="display:grid; gap:10px;">
         <label><span>API key do Dub</span><input id="s-key" class="mono" value="${escapeHtml(state.apiKey)}" placeholder="dub_..." /></label>
         <label><span>Domínio</span><input id="s-domain" class="mono" value="${escapeHtml(state.domain)}" placeholder="go.signly.site" /></label>
       </div>
+      <p style="font-size:12px; color:#5B6774; margin:10px 0 0;">Cole os mesmos dados do Supabase em todos os aparelhos (celular, computador) pra ver as mesmas contas. A chave do Dub você digita em cada aparelho, ela não é salva na nuvem.</p>
       <div style="display:flex; justify-content:flex-end; margin-top:12px;">
         <button class="btn-primary" id="btn-save-settings">Salvar configurações</button>
       </div>
@@ -222,8 +298,10 @@ function render() {
       </div>
     </div>` : ''}
 
-    ${state.accounts.length === 0 ? `
-      <div style="text-align:center; padding:3rem 1rem; color:#5B6774; font-size:14px;">Nenhuma conta cadastrada ainda. Clica em + Nova conta pra começar.</div>
+    ${state.loading ? `
+      <p style="color:#5B6774; font-size:14px;">Carregando...</p>
+    ` : state.accounts.length === 0 ? `
+      <div style="text-align:center; padding:3rem 1rem; color:#5B6774; font-size:14px;">${state.supabaseUrl ? 'Nenhuma conta cadastrada ainda. Clica em + Nova conta pra começar.' : 'Configure a nuvem em Configurações antes de cadastrar contas.'}</div>
     ` : `<div class="card" style="padding:0; overflow:hidden;">${rows}</div>`}
   `;
 
@@ -240,7 +318,9 @@ function render() {
   app.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => copyText(b.dataset.copy, b)));
 }
 
+fetchAccounts().then(render);
 render();
+
 </script>
 </body>
 </html>
